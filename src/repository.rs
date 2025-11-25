@@ -182,7 +182,7 @@ pub fn download(
         if !auth.is_empty() {
             request = request.set("Authorization", &auth);
         }
-        let mut response = request.call()?;
+        let response = request.call()?;
         let mut bytes = Vec::new();
         response.into_reader().read_to_end(&mut bytes)?;
         write_bytes(&file_path, &bytes)?;

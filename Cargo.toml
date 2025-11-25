@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 aes = "0.8"
-eax = "0.6"
+eax = "0.5"
 sha2 = "0.10"
 rand_core = "0.6"
 serde = { version = "1", features = ["derive"] }

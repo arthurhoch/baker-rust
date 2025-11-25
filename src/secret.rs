@@ -46,10 +46,13 @@ impl Crypto {
     }
 
     pub fn encrypt(&self, raw: &str) -> Result<String, Box<dyn Error>> {
-        let cipher = Eax::<Aes256>::new_from_slice(&self.key)?;
+        let cipher =
+            Eax::<Aes256>::new_from_slice(&self.key).map_err(|e| format!("cipher init: {:?}", e))?;
         let nonce = Eax::<Aes256>::generate_nonce(&mut OsRng);
         let mut buffer = raw.as_bytes().to_vec();
-        let tag = cipher.encrypt_in_place_detached(&nonce, b"", &mut buffer)?;
+        let tag = cipher
+            .encrypt_in_place_detached(&nonce, b"", &mut buffer)
+            .map_err(|e| format!("encrypt error: {:?}", e))?;
         Ok(format!(
             "{}\\{}\\{}",
             hex_encode(&nonce),
@@ -73,13 +76,16 @@ impl Crypto {
         let nonce = hex_decode(nonce)?;
         let tag = hex_decode(tag)?;
         let mut data = hex_decode(body)?;
-        let cipher = Eax::<Aes256>::new_from_slice(&self.key)?;
-        cipher.decrypt_in_place_detached(
-            nonce.as_slice().into(),
-            b"",
-            &mut data,
-            tag.as_slice().into(),
-        )?;
+        let cipher =
+            Eax::<Aes256>::new_from_slice(&self.key).map_err(|e| format!("cipher init: {:?}", e))?;
+        cipher
+            .decrypt_in_place_detached(
+                nonce.as_slice().into(),
+                b"",
+                &mut data,
+                tag.as_slice().into(),
+            )
+            .map_err(|e| format!("decrypt error: {:?}", e))?;
         let plaintext = String::from_utf8(data)?;
         Ok(plaintext)
     }

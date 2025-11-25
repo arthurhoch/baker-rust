@@ -66,7 +66,7 @@ pub fn parse(file: &str, settings: &Settings, case_override: Option<bool>) -> Re
 
     let mut instructions = Vec::new();
     for (name, partial) in partial {
-        instructions.push(partial.build(name, case_sensitive)?);
+        instructions.push(partial.build(name)?);
     }
 
     Ok(Recipe {
@@ -125,7 +125,7 @@ impl PartialInstruction {
         Ok(())
     }
 
-    fn build(self, name: String, case_sensitive: bool) -> Result<Instruction, Box<dyn Error>> {
+    fn build(self, name: String) -> Result<Instruction, Box<dyn Error>> {
         let template = self
             .template
             .ok_or_else(|| format!("Section [{}:template] is required", name))?;

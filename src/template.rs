@@ -5,7 +5,6 @@ use crate::storage::{read_file, write_file};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use std::path::Path;
 
 pub fn replace(
     instructions: &[Instruction],

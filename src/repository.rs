@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::PathBuf;
 use ureq::Agent;
 
 pub struct Repository<'a> {
@@ -76,7 +77,7 @@ impl<'a> Repository<'a> {
                     "REPOSITORY_CUSTOM_PATTERN must be set when REPOSITORY_TYPE is 'custom'".into(),
                 );
             }
-        } else if !REPOSITORY_PATTERNS.contains_key(rtype.as_str()) {
+        } else if rtype != "github" && rtype != "bitbucket" {
             return Err(format!("REPOSITORY_TYPE '{}' is not supported", rtype).into());
         }
         Ok(())
@@ -181,8 +182,9 @@ pub fn download(
         if !auth.is_empty() {
             request = request.set("Authorization", &auth);
         }
-        let response = request.call()?;
-        let bytes = response.into_bytes()?;
+        let mut response = request.call()?;
+        let mut bytes = Vec::new();
+        response.into_reader().read_to_end(&mut bytes)?;
         write_bytes(&file_path, &bytes)?;
         logger.log(&format!("{} download DONE!", url));
     } else {

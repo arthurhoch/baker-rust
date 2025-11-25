@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn read_file(path: &str) -> std::io::Result<String> {
     fs::read_to_string(path)

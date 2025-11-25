@@ -1,0 +1,40 @@
+name: baker-rust-apk
+
+on:
+  push:
+    paths:
+      - "baker-rust/**"
+      - ".github/workflows/baker-rust-apk.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    container: alpine:3.20
+    steps:
+      - name: Install build deps
+        run: |
+          apk add --no-cache git alpine-sdk cargo
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup abuild user
+        run: |
+          adduser -D builder
+          addgroup builder abuild
+          su builder -c 'abuild-keygen -a -i -n'
+      - name: Create source tarball
+        working-directory: /github/workspace/baker-rust
+        run: |
+          PKGVER=$(grep '^version' Cargo.toml | head -n1 | cut -d'=' -f2 | tr -d ' "')
+          git archive --format=tar.gz --output "../baker-rust-$PKGVER.tar.gz" --prefix="baker-rust-$PKGVER/" HEAD
+      - name: Build APK
+        working-directory: /github/workspace/baker-rust
+        run: |
+          su builder -c "cd /github/workspace/baker-rust; abuild checksum; abuild -r"
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: baker-rust-apk
+          path: |
+            /home/builder/packages/**/baker-rust-*.apk
+            /home/builder/packages/**/APKINDEX.tar.gz

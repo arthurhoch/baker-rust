@@ -24,14 +24,14 @@ jobs:
           su builder -c 'abuild-keygen -a -n -q'
           install -m644 /home/builder/.abuild/*.pub /etc/apk/keys/
       - name: Create source tarball
-        working-directory: /github/workspace/baker-rust
+        working-directory: ${{ github.workspace }}/baker-rust
         run: |
           PKGVER=$(grep '^version' Cargo.toml | head -n1 | cut -d'=' -f2 | tr -d ' "')
           git archive --format=tar.gz --output "../baker-rust-$PKGVER.tar.gz" --prefix="baker-rust-$PKGVER/" HEAD
       - name: Build APK
-        working-directory: /github/workspace/baker-rust
+        working-directory: ${{ github.workspace }}/baker-rust
         run: |
-          su builder -c "cd /github/workspace/baker-rust; abuild checksum; abuild -r"
+          su builder -c "cd ${{ github.workspace }}/baker-rust; abuild checksum; abuild -r"
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:

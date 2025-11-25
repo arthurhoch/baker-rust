@@ -12,7 +12,7 @@ PKGVER="$(grep '^version' Cargo.toml | head -n1 | cut -d'=' -f2 | tr -d ' \"')"
 TARBALL="$PKGNAME-$PKGVER.tar.gz"
 
 echo "==> Preparing build environment"
-apk add --no-cache alpine-sdk cargo git
+apk add --no-cache alpine-sdk cargo git doas
 
 if ! id builder >/dev/null 2>&1; then
 	adduser -D builder
@@ -20,7 +20,8 @@ if ! id builder >/dev/null 2>&1; then
 fi
 
 if [ ! -d /home/builder/.abuild ]; then
-	su builder -c 'abuild-keygen -a -i -n'
+	su builder -c 'abuild-keygen -a -n -q'
+	install -m644 /home/builder/.abuild/*.pub /etc/apk/keys/
 fi
 
 echo "==> Creating source tarball $TARBALL"

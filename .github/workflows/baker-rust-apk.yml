@@ -14,14 +14,15 @@ jobs:
     steps:
       - name: Install build deps
         run: |
-          apk add --no-cache git alpine-sdk cargo
+          apk add --no-cache git alpine-sdk cargo doas
       - name: Checkout
         uses: actions/checkout@v4
       - name: Setup abuild user
         run: |
           adduser -D builder
           addgroup builder abuild
-          su builder -c 'abuild-keygen -a -i -n'
+          su builder -c 'abuild-keygen -a -n -q'
+          install -m644 /home/builder/.abuild/*.pub /etc/apk/keys/
       - name: Create source tarball
         working-directory: /github/workspace/baker-rust
         run: |

@@ -5,7 +5,14 @@ on:
     paths:
       - "baker-rust/**"
       - ".github/workflows/baker-rust-apk.yml"
+    tags:
+      - "v*"
   workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build-apk:
@@ -15,23 +22,84 @@ jobs:
       - name: Install build deps
         run: |
           apk add --no-cache git alpine-sdk cargo doas
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup abuild user
+      - name: Create abuild user
         run: |
           adduser -D builder
           addgroup builder abuild
-          su builder -c 'abuild-keygen -a -n -q'
-          install -m644 /home/builder/.abuild/*.pub /etc/apk/keys/
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Trust workspace ownership for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Fix ownership for abuild
+        run: chown -R builder:abuild "$GITHUB_WORKSPACE"
+      - name: Install signing key
+        env:
+          ABUILD_PRIVKEY_B64: ${{ secrets.ABUILD_PRIVKEY_B64 }}
+        run: |
+          mkdir -p /home/builder/.abuild
+          if [ -n "$ABUILD_PRIVKEY_B64" ]; then
+            echo "$ABUILD_PRIVKEY_B64" | base64 -d > /home/builder/.abuild/packager.rsa
+            chmod 600 /home/builder/.abuild/packager.rsa
+            install -m644 "$GITHUB_WORKSPACE/root-69263073.rsa.pub" /home/builder/.abuild/packager.rsa.pub
+          else
+            su builder -c 'abuild-keygen -a -n -q'
+            PRIVKEY=$(su builder -c "ls /home/builder/.abuild/*.rsa | head -n1")
+            PUBKEY="${PRIVKEY}.pub"
+            ln -sf "$PRIVKEY" /home/builder/.abuild/packager.rsa
+            ln -sf "$PUBKEY" /home/builder/.abuild/packager.rsa.pub
+          fi
+          install -m644 /home/builder/.abuild/packager.rsa.pub /etc/apk/keys/
+          chown -R builder:abuild /home/builder/.abuild
       - name: Create source tarball
-        working-directory: ${{ github.workspace }}/baker-rust
+        working-directory: ${{ github.workspace }}
         run: |
-          PKGVER=$(grep '^version' Cargo.toml | head -n1 | cut -d'=' -f2 | tr -d ' "')
-          git archive --format=tar.gz --output "../baker-rust-$PKGVER.tar.gz" --prefix="baker-rust-$PKGVER/" HEAD
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          if [ ! -f "$PROJECT_DIR/Cargo.toml" ] && [ -f "$PROJECT_DIR/baker-rust/Cargo.toml" ]; then
+            PROJECT_DIR="$PROJECT_DIR/baker-rust"
+          fi
+          PKGVER=$(grep '^version' "$PROJECT_DIR/Cargo.toml" | head -n1 | cut -d'=' -f2 | tr -d ' "')
+          mkdir -p /var/cache/distfiles
+          (cd "$PROJECT_DIR" && git archive --format=tar.gz --output "/var/cache/distfiles/baker-rust-$PKGVER.tar.gz" --prefix="baker-rust-$PKGVER/" HEAD)
+          cp "/var/cache/distfiles/baker-rust-$PKGVER.tar.gz" "$GITHUB_WORKSPACE/"
       - name: Build APK
-        working-directory: ${{ github.workspace }}/baker-rust
+        working-directory: ${{ github.workspace }}
         run: |
-          su builder -c "cd ${{ github.workspace }}/baker-rust; abuild checksum; abuild -r"
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          if [ ! -f "$PROJECT_DIR/Cargo.toml" ] && [ -f "$PROJECT_DIR/baker-rust/Cargo.toml" ]; then
+            PROJECT_DIR="$PROJECT_DIR/baker-rust"
+          fi
+          su builder -c "cd $PROJECT_DIR; PKGVER=$(grep '^version' Cargo.toml | head -n1 | cut -d'=' -f2 | tr -d ' \"'); SRCDEST=/var/cache/distfiles ABUILD_SRCDEST=/var/cache/distfiles PACKAGER_PRIVKEY=/home/builder/.abuild/packager.rsa abuild checksum; SRCDEST=/var/cache/distfiles ABUILD_SRCDEST=/var/cache/distfiles PACKAGER_PRIVKEY=/home/builder/.abuild/packager.rsa abuild -r"
+      - name: Build standalone binary
+        working-directory: ${{ github.workspace }}
+        run: |
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          if [ ! -f "$PROJECT_DIR/Cargo.toml" ] && [ -f "$PROJECT_DIR/baker-rust/Cargo.toml" ]; then
+            PROJECT_DIR="$PROJECT_DIR/baker-rust"
+          fi
+          cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
+          ARCH=$(apk --print-arch)
+          mkdir -p publish/binaries/"$ARCH"
+          cp "$PROJECT_DIR/target/release/baker-rust" "publish/binaries/$ARCH/baker-rust"
+      - name: Prepare Pages content
+        run: |
+          ARCH=$(apk --print-arch)
+          mkdir -p publish/alpine/baker-rust/"$ARCH"
+          cp -a /home/builder/packages/baker-rust/"$ARCH"/. publish/alpine/baker-rust/"$ARCH"/
+          # publish the actual signing key used by abuild
+          cp /home/builder/.abuild/packager.rsa.pub publish/alpine/baker-rust/"$ARCH"/packager.rsa.pub
+          # keep the legacy root key alongside if present
+          if [ -f "$GITHUB_WORKSPACE/root-69263073.rsa.pub" ]; then
+            cp "$GITHUB_WORKSPACE/root-69263073.rsa.pub" publish/alpine/baker-rust/"$ARCH"/root-69263073.rsa.pub
+          fi
+          cp "$GITHUB_WORKSPACE/arch-index.html" publish/alpine/baker-rust/"$ARCH"/index.html
+          cp "$GITHUB_WORKSPACE/index.html" publish/index.html
+          # also provide a root index for org pages to redirect to this site
+          mkdir -p publish-root
+          cp "$GITHUB_WORKSPACE/root-index.html" publish-root/index.html
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: publish
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
@@ -39,3 +107,58 @@ jobs:
           path: |
             /home/builder/packages/**/baker-rust-*.apk
             /home/builder/packages/**/APKINDEX.tar.gz
+            publish/binaries/**/baker-rust
+
+  deploy-pages:
+    needs: build-apk
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        with:
+          # publish both the site and root redirect (uploaded artifacts)
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  test-install:
+    needs: deploy-pages
+    runs-on: ubuntu-latest
+    container: alpine:3.20
+    steps:
+      - name: Install from published repo
+        run: |
+          apk add --no-cache ca-certificates
+          echo "https://arthurhoch.github.io/baker-rust/alpine/baker-rust" >> /etc/apk/repositories
+          ARCH=$(apk --print-arch)
+          wget -O /etc/apk/keys/packager.rsa.pub https://arthurhoch.github.io/baker-rust/alpine/baker-rust/$ARCH/packager.rsa.pub
+          apk update
+          apk add baker-rust
+          baker-rust --help
+
+  release:
+    needs: build-apk
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: baker-rust-apk
+          path: release-artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release-artifacts/**/*.apk
+            release-artifacts/**/APKINDEX.tar.gz
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

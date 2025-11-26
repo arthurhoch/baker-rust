@@ -1,6 +1,7 @@
 # Baker Rust
 
 Rust implementation of BakerCM.
+Based on the original Python BakerCM (https://pypi.org/project/bakercm/). We hit install and environment issues with the PyPI package in some setups, so baker-rust reimplements the same behavior as a single self-contained binary to make installation easier anywhere.
 
 ## Why Use This?
 - Same recipe and template behavior as BakerCM (INI recipes, `{{ VAR }}` templates, secrets, remote pulls).

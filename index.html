@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>baker-rust APK repo</title>
+</head>
+<body>
+  <h1>baker-rust Alpine repo</h1>
+  <p><strong>Based on</strong> the original Python BakerCM (<a href="https://pypi.org/project/bakercm/">PyPI</a>). We ran into installation issues with the PyPI package in some environments, so baker-rust reimplements the same behavior as a single self-contained binary to simplify installs anywhere.</p>
+  <p><strong>What this is:</strong> a Rust reimplementation of BakerCM that ships as a single binary, with an Alpine APK repo ready for direct install.</p>
+  <p><strong>Why:</strong> the original PyPI package had install issues in some environments; this binary keeps the same recipe/template semantics and secret format, but is easier to deploy.</p>
+  <p>APK repo root: <a href="https://arthurhoch.github.io/baker-rust/alpine/baker-rust/x86_64/">alpine/baker-rust/x86_64/</a></p>
+  <p>Project source (GitHub): <a href="https://github.com/arthurhoch/baker-rust">https://github.com/arthurhoch/baker-rust</a></p>
+  <ul>
+    <li><a href="https://arthurhoch.github.io/baker-rust/alpine/baker-rust/x86_64/APKINDEX.tar.gz">APKINDEX.tar.gz</a></li>
+    <li><a href="https://arthurhoch.github.io/baker-rust/alpine/baker-rust/x86_64/packager.rsa.pub">Public key (packager.rsa.pub)</a></li>
+  </ul>
+  <h2>Use in Alpine</h2>
+  <pre>echo "https://arthurhoch.github.io/baker-rust/alpine/baker-rust" | sudo tee -a /etc/apk/repositories
+sudo wget -O /etc/apk/keys/packager.rsa.pub https://arthurhoch.github.io/baker-rust/alpine/baker-rust/x86_64/packager.rsa.pub
+sudo apk update
+sudo apk add baker-rust</pre>
+  <p>Note: the repo path includes the architecture subfolder. Directory listing under <code>alpine/baker-rust/x86_64/</code> now serves an index page.</p>
+</body>
+</html>

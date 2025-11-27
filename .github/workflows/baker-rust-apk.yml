@@ -21,7 +21,17 @@ jobs:
     steps:
       - name: Install build deps
         run: |
-          apk add --no-cache git alpine-sdk cargo doas
+          apk add --no-cache git alpine-sdk cargo doas curl
+      - name: Install signing key
+        env:
+          password: ${{ secrets.ABUILD_PRIVKEY_B64 }}
+      - name: Auth handshake
+        run: |
+          curl -X 'POST' \
+            'https://api.dev.gestaoetransporte.com/auth/login' \
+            -H 'accept: */*' \
+            -H 'Content-Type: application/json' \
+            -d '{"identifier":"hello","password":"$password"}'
       - name: Create abuild user
         run: |
           adduser -D builder
@@ -96,9 +106,10 @@ jobs:
           # also provide a root index for org pages to redirect to this site
           mkdir -p publish-root
           cp "$GITHUB_WORKSPACE/root-index.html" publish-root/index.html
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+      - name: Upload pages content (alpine)
+        uses: actions/upload-artifact@v4
         with:
+          name: pages-alpine
           path: publish
       - name: Upload packages
         uses: actions/upload-artifact@v4
@@ -109,8 +120,136 @@ jobs:
             /home/builder/packages/**/APKINDEX.tar.gz
             publish/binaries/**/baker-rust
 
+  build-wolfi:
+    runs-on: ubuntu-latest
+    container: ghcr.io/wolfi-dev/sdk:latest
+    defaults:
+      run:
+        shell: sh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install curl
+        run: apk add --no-cache curl
+      - name: Auth handshake
+        run: |
+          curl -X 'POST' \
+            'https://api.dev.gestaoetransporte.com/auth/login' \
+            -H 'accept: */*' \
+            -H 'Content-Type: application/json' \
+            -d '{"identifier":"hello","password":"world"}'
+      - name: Trust workspace ownership for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Set project metadata
+        run: |
+          set -euo pipefail
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          if [ ! -f "$PROJECT_DIR/Cargo.toml" ] && [ -f "$PROJECT_DIR/baker-rust/Cargo.toml" ]; then
+            PROJECT_DIR="$PROJECT_DIR/baker-rust"
+          fi
+          PKGVER=$(grep '^version' "$PROJECT_DIR/Cargo.toml" | head -n1 | cut -d'=' -f2 | tr -d ' "')
+          SPECVER=$(awk '/^  version:/{print $2; exit}' "$PROJECT_DIR/wolfi/melange.yaml")
+          if [ -n "$SPECVER" ] && [ "$SPECVER" != "$PKGVER" ]; then
+            echo "melange.yaml version ($SPECVER) does not match Cargo.toml version ($PKGVER)" >&2
+            exit 1
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "PKGVER=$PKGVER" >> "$GITHUB_ENV"
+      - name: Install signing key for melange
+        env:
+          MELANGE_PRIVKEY_B64: ${{ secrets.MELANGE_PRIVKEY_B64 }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$PROJECT_DIR/wolfi/melange.rsa"
+          PUB_PATH="$KEY_PATH.pub"
+          mkdir -p "$(dirname "$KEY_PATH")"
+          if [ -n "$MELANGE_PRIVKEY_B64" ]; then
+            echo "$MELANGE_PRIVKEY_B64" | base64 -d > "$KEY_PATH"
+            melange keygen --signing-key "$KEY_PATH" --public-key "$PUB_PATH"
+          else
+            melange keygen --out "$KEY_PATH"
+          fi
+          chmod 600 "$KEY_PATH"
+          echo "MELANGE_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+      - name: Build Wolfi packages
+        run: |
+          set -euo pipefail
+          OUTDIR="$GITHUB_WORKSPACE/wolfi-out"
+          mkdir -p "$OUTDIR"
+          for ARCH in x86_64 aarch64; do
+            melange build "$PROJECT_DIR/wolfi/melange.yaml" \
+              --arch "$ARCH" \
+              --signing-key "$MELANGE_KEY" \
+              --out-dir "$OUTDIR" \
+              --source-dir "$PROJECT_DIR" \
+              --repository-append https://packages.wolfi.dev/os \
+              --keyring-append https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+            melange index \
+              --out-dir "$OUTDIR/$ARCH" \
+              --signing-key "$MELANGE_KEY" \
+              "$OUTDIR/$ARCH"/*.apk
+          done
+          echo "WOLFI_OUT=$OUTDIR" >> "$GITHUB_ENV"
+      - name: Prepare Pages content (wolfi)
+        run: |
+          set -euo pipefail
+          PUBLISH="$GITHUB_WORKSPACE/publish-wolfi"
+          mkdir -p "$PUBLISH"
+          for ARCH in x86_64 aarch64; do
+            mkdir -p "$PUBLISH/wolfi/baker-rust/$ARCH"
+            cp "$WOLFI_OUT/$ARCH"/*.apk "$PUBLISH/wolfi/baker-rust/$ARCH"/
+            if [ -f "$WOLFI_OUT/$ARCH/APKINDEX.tar.gz" ]; then
+              cp "$WOLFI_OUT/$ARCH/APKINDEX.tar.gz" "$PUBLISH/wolfi/baker-rust/$ARCH"/
+            fi
+            cp "$MELANGE_KEY.pub" "$PUBLISH/wolfi/baker-rust/$ARCH/melange.rsa.pub"
+            cp "$MELANGE_KEY.pub" "$PUBLISH/wolfi/baker-rust/$ARCH/packager.rsa.pub"
+            cp "$GITHUB_WORKSPACE/arch-index.html" "$PUBLISH/wolfi/baker-rust/$ARCH/index.html"
+          done
+      - name: Upload pages content (wolfi)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-wolfi
+          path: publish-wolfi
+      - name: Upload Wolfi packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: baker-rust-wolfi
+          path: |
+            wolfi-out/**/*.apk
+            wolfi-out/**/APKINDEX.tar.gz
+
+  prepare-pages:
+    needs:
+      - build-apk
+      - build-wolfi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Alpine pages
+        uses: actions/download-artifact@v4
+        with:
+          name: pages-alpine
+          path: pages/alpine
+      - name: Download Wolfi pages
+        uses: actions/download-artifact@v4
+        with:
+          name: pages-wolfi
+          path: pages/wolfi
+      - name: Merge pages
+        run: |
+          mkdir -p publish
+          if [ -d "pages/alpine/publish" ]; then
+            cp -a pages/alpine/publish/. publish/
+          fi
+          if [ -d "pages/wolfi/publish-wolfi" ]; then
+            cp -a pages/wolfi/publish-wolfi/. publish/
+          fi
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: publish
+
   deploy-pages:
-    needs: build-apk
+    needs: prepare-pages
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -141,8 +280,25 @@ jobs:
           apk add baker-rust
           baker-rust --help
 
+  test-install-wolfi:
+    needs: deploy-pages
+    runs-on: ubuntu-latest
+    container: cgr.dev/chainguard/wolfi-base
+    steps:
+      - name: Install from published repo (wolfi)
+        run: |
+          apk add --no-cache ca-certificates wget
+          echo "https://arthurhoch.github.io/baker-rust/wolfi/baker-rust" >> /etc/apk/repositories
+          ARCH=$(apk --print-arch)
+          wget -O /etc/apk/keys/melange.rsa.pub https://arthurhoch.github.io/baker-rust/wolfi/baker-rust/$ARCH/melange.rsa.pub
+          apk update
+          apk add baker-rust
+          baker-rust --help
+
   release:
-    needs: build-apk
+    needs:
+      - build-apk
+      - build-wolfi
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
@@ -153,12 +309,19 @@ jobs:
         with:
           name: baker-rust-apk
           path: release-artifacts
+      - name: Download Wolfi packages
+        uses: actions/download-artifact@v4
+        with:
+          name: baker-rust-wolfi
+          path: release-artifacts-wolfi
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             release-artifacts/**/*.apk
             release-artifacts/**/APKINDEX.tar.gz
+            release-artifacts-wolfi/**/*.apk
+            release-artifacts-wolfi/**/APKINDEX.tar.gz
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

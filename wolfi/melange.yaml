@@ -1,0 +1,38 @@
+package:
+  name: baker-rust
+  version: 0.1.0
+  epoch: 0
+  description: "Rust implementation of BakerCM"
+  copyright:
+    - license: BSD-3-Clause
+  target-architecture:
+    - x86_64
+    - aarch64
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    packages:
+      - busybox
+      - ca-certificates-bundle
+      - build-base
+      - cargo
+      - git
+      - pkgconf
+      - rust
+      - rust-std
+
+pipeline:
+  - uses: cargo/build
+    with:
+      target: ${{targets.triplet}}
+      locked: false
+  - runs: |
+      BIN="target/${{targets.triplet}}/release/baker-rust"
+      if [ ! -f "$BIN" ]; then
+        BIN="target/release/baker-rust"
+      fi
+      install -Dm755 "$BIN" "${{targets.destdir}}/usr/bin/baker-rust"
+      install -Dm644 README.md "${{targets.destdir}}/usr/share/doc/baker-rust/README.md"
+  - uses: strip

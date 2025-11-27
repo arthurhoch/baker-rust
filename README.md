@@ -23,6 +23,27 @@ Requires Rust 1.70+.
 cargo build
 ```
 
+## Packages
+Pre-built packages are published for Alpine and Wolfi to simplify installs.
+
+### Alpine
+```console
+echo "https://arthurhoch.github.io/baker-rust/alpine/baker-rust" | sudo tee -a /etc/apk/repositories
+ARCH=$(apk --print-arch)
+sudo wget -O /etc/apk/keys/packager.rsa.pub https://arthurhoch.github.io/baker-rust/alpine/baker-rust/$ARCH/packager.rsa.pub
+sudo apk update
+sudo apk add baker-rust
+```
+
+### Wolfi (wolfi-dev)
+```console
+echo "https://arthurhoch.github.io/baker-rust/wolfi/baker-rust" | sudo tee -a /etc/apk/repositories
+ARCH=$(apk --print-arch)
+sudo wget -O /etc/apk/keys/melange.rsa.pub https://arthurhoch.github.io/baker-rust/wolfi/baker-rust/$ARCH/melange.rsa.pub
+sudo apk update
+sudo apk add baker-rust
+```
+
 ## Using Baker (Rust)
 1. Create a recipe such as `examples/dev.cfg`
 

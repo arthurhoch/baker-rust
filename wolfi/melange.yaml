@@ -17,22 +17,20 @@ environment:
       - busybox
       - ca-certificates-bundle
       - build-base
-      - cargo
       - git
       - pkgconf
       - rust
-      - rust-std
 
 pipeline:
-  - uses: cargo/build
-    with:
-      target: ${{targets.triplet}}
-      locked: false
   - runs: |
-      BIN="target/${{targets.triplet}}/release/baker-rust"
-      if [ ! -f "$BIN" ]; then
-        BIN="target/release/baker-rust"
+      cargo build --release
+  - runs: |
+      BIN="$(find target -type f -path '*/release/baker-rust' | head -n1)"
+      if [ -z "$BIN" ]; then
+        echo "baker-rust binary not found under target/*/release" >&2
+        exit 1
       fi
       install -Dm755 "$BIN" "${{targets.destdir}}/usr/bin/baker-rust"
       install -Dm644 README.md "${{targets.destdir}}/usr/share/doc/baker-rust/README.md"
+      install -Dm644 LICENSE "${{targets.destdir}}/usr/share/licenses/baker-rust/LICENSE"
   - uses: strip

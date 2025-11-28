@@ -15,23 +15,13 @@ permissions:
   id-token: write
 
 jobs:
-  build-apk:
+  build-alpine:
     runs-on: ubuntu-latest
     container: alpine:3.20
     steps:
       - name: Install build deps
         run: |
-          apk add --no-cache git alpine-sdk cargo doas curl
-      - name: Install signing key
-        env:
-          password: ${{ secrets.ABUILD_PRIVKEY_B64 }}
-      - name: Auth handshake
-        run: |
-          curl -X 'POST' \
-            'https://api.dev.gestaoetransporte.com/auth/login' \
-            -H 'accept: */*' \
-            -H 'Content-Type: application/json' \
-            -d '{"identifier":"hello","password":"$password"}'
+          apk add --no-cache git alpine-sdk cargo doas
       - name: Create abuild user
         run: |
           adduser -D builder
@@ -102,10 +92,10 @@ jobs:
             cp "$GITHUB_WORKSPACE/root-69263073.rsa.pub" publish/alpine/baker-rust/"$ARCH"/root-69263073.rsa.pub
           fi
           cp "$GITHUB_WORKSPACE/arch-index.html" publish/alpine/baker-rust/"$ARCH"/index.html
+          # site root for project pages
           cp "$GITHUB_WORKSPACE/index.html" publish/index.html
-          # also provide a root index for org pages to redirect to this site
-          mkdir -p publish-root
-          cp "$GITHUB_WORKSPACE/root-index.html" publish-root/index.html
+          # root redirect for org-level pages if served
+          cp "$GITHUB_WORKSPACE/root-index.html" publish/root-index.html
       - name: Upload pages content (alpine)
         uses: actions/upload-artifact@v4
         with:
@@ -122,22 +112,17 @@ jobs:
 
   build-wolfi:
     runs-on: ubuntu-latest
-    container: ghcr.io/wolfi-dev/sdk:latest
+    container:
+      image: ghcr.io/wolfi-dev/sdk:latest
+      options: --privileged
     defaults:
       run:
         shell: sh
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install curl
-        run: apk add --no-cache curl
-      - name: Auth handshake
-        run: |
-          curl -X 'POST' \
-            'https://api.dev.gestaoetransporte.com/auth/login' \
-            -H 'accept: */*' \
-            -H 'Content-Type: application/json' \
-            -d '{"identifier":"hello","password":"world"}'
+      - name: Install build tools
+        run: apk add --no-cache apk-tools openssl
       - name: Trust workspace ownership for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Set project metadata
@@ -165,10 +150,25 @@ jobs:
           mkdir -p "$(dirname "$KEY_PATH")"
           if [ -n "$MELANGE_PRIVKEY_B64" ]; then
             echo "$MELANGE_PRIVKEY_B64" | base64 -d > "$KEY_PATH"
-            melange keygen --signing-key "$KEY_PATH" --public-key "$PUB_PATH"
+            # Normalize to PKCS1 RSA if provided as PKCS8
+            if openssl pkey -in "$KEY_PATH" -inform PEM -out "$KEY_PATH.pkcs1" -outform PEM -traditional >/dev/null 2>&1; then
+              mv "$KEY_PATH.pkcs1" "$KEY_PATH"
+            fi
+            if ! openssl rsa -in "$KEY_PATH" -pubout -out "$PUB_PATH"; then
+              echo "Provided MELANGE_PRIVKEY_B64 is not a usable RSA key; falling back to generated key" >&2
+              melange keygen --out "$KEY_PATH"
+            fi
           else
             melange keygen --out "$KEY_PATH"
+            if [ ! -f "$PUB_PATH" ] && [ -f "$KEY_PATH.pub" ]; then
+              cp "$KEY_PATH.pub" "$PUB_PATH"
+            fi
           fi
+          if [ ! -f "$PUB_PATH" ] && [ -f "$KEY_PATH.pub" ]; then
+            cp "$KEY_PATH.pub" "$PUB_PATH"
+          fi
+          # Trust the public key locally for apk tooling
+          install -m644 "$PUB_PATH" /etc/apk/keys/
           chmod 600 "$KEY_PATH"
           echo "MELANGE_KEY=$KEY_PATH" >> "$GITHUB_ENV"
       - name: Build Wolfi packages
@@ -176,7 +176,8 @@ jobs:
           set -euo pipefail
           OUTDIR="$GITHUB_WORKSPACE/wolfi-out"
           mkdir -p "$OUTDIR"
-          for ARCH in x86_64 aarch64; do
+          HOST_ARCH=$(apk --print-arch)
+          for ARCH in $HOST_ARCH; do
             melange build "$PROJECT_DIR/wolfi/melange.yaml" \
               --arch "$ARCH" \
               --signing-key "$MELANGE_KEY" \
@@ -184,10 +185,10 @@ jobs:
               --source-dir "$PROJECT_DIR" \
               --repository-append https://packages.wolfi.dev/os \
               --keyring-append https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
-            melange index \
-              --out-dir "$OUTDIR/$ARCH" \
-              --signing-key "$MELANGE_KEY" \
-              "$OUTDIR/$ARCH"/*.apk
+            (
+              cd "$OUTDIR/$ARCH"
+              melange index --arch "$ARCH" --signing-key "$MELANGE_KEY" ./*.apk
+            )
           done
           echo "WOLFI_OUT=$OUTDIR" >> "$GITHUB_ENV"
       - name: Prepare Pages content (wolfi)
@@ -195,7 +196,8 @@ jobs:
           set -euo pipefail
           PUBLISH="$GITHUB_WORKSPACE/publish-wolfi"
           mkdir -p "$PUBLISH"
-          for ARCH in x86_64 aarch64; do
+          HOST_ARCH=$(apk --print-arch)
+          for ARCH in $HOST_ARCH; do
             mkdir -p "$PUBLISH/wolfi/baker-rust/$ARCH"
             cp "$WOLFI_OUT/$ARCH"/*.apk "$PUBLISH/wolfi/baker-rust/$ARCH"/
             if [ -f "$WOLFI_OUT/$ARCH/APKINDEX.tar.gz" ]; then
@@ -220,7 +222,7 @@ jobs:
 
   prepare-pages:
     needs:
-      - build-apk
+      - build-alpine
       - build-wolfi
     runs-on: ubuntu-latest
     steps:
@@ -237,11 +239,11 @@ jobs:
       - name: Merge pages
         run: |
           mkdir -p publish
-          if [ -d "pages/alpine/publish" ]; then
-            cp -a pages/alpine/publish/. publish/
+          if [ -d "pages/alpine" ]; then
+            cp -a pages/alpine/. publish/
           fi
-          if [ -d "pages/wolfi/publish-wolfi" ]; then
-            cp -a pages/wolfi/publish-wolfi/. publish/
+          if [ -d "pages/wolfi" ]; then
+            cp -a pages/wolfi/. publish/
           fi
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
@@ -265,7 +267,7 @@ jobs:
           # publish both the site and root redirect (uploaded artifacts)
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  test-install:
+  test-install-alpine:
     needs: deploy-pages
     runs-on: ubuntu-latest
     container: alpine:3.20
@@ -297,7 +299,7 @@ jobs:
 
   release:
     needs:
-      - build-apk
+      - build-alpine
       - build-wolfi
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -314,14 +316,37 @@ jobs:
         with:
           name: baker-rust-wolfi
           path: release-artifacts-wolfi
+      - name: Prepare release asset names
+        run: |
+          set -euo pipefail
+          mkdir -p release-upload
+          # Alpine artifacts
+          if [ -d release-artifacts ]; then
+            find release-artifacts -type f -name '*.apk' | while read -r f; do
+              ARCH=$(basename "$(dirname "$f")")
+              cp "$f" "release-upload/alpine-${ARCH}-$(basename "$f")"
+            done
+            find release-artifacts -type f -name 'APKINDEX.tar.gz' | while read -r f; do
+              ARCH=$(basename "$(dirname "$f")")
+              cp "$f" "release-upload/alpine-${ARCH}-APKINDEX.tar.gz"
+            done
+          fi
+          # Wolfi artifacts
+          if [ -d release-artifacts-wolfi ]; then
+            find release-artifacts-wolfi -type f -name '*.apk' | while read -r f; do
+              ARCH=$(basename "$(dirname "$f")")
+              cp "$f" "release-upload/wolfi-${ARCH}-$(basename "$f")"
+            done
+            find release-artifacts-wolfi -type f -name 'APKINDEX.tar.gz' | while read -r f; do
+              ARCH=$(basename "$(dirname "$f")")
+              cp "$f" "release-upload/wolfi-${ARCH}-APKINDEX.tar.gz"
+            done
+          fi
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            release-artifacts/**/*.apk
-            release-artifacts/**/APKINDEX.tar.gz
-            release-artifacts-wolfi/**/*.apk
-            release-artifacts-wolfi/**/APKINDEX.tar.gz
+            release-upload/*
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
